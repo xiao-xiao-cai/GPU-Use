@@ -1,0 +1,64 @@
+services:
+  web:
+    image: ${GPU_TEST_IMAGE:?set GPU_TEST_IMAGE}
+    environment:
+      GPU_READ_ONLY: "1"
+      GPU_BIND_IP: "127.0.0.1"
+      GPU_MCP_BIND_PORT: ${GPU_TEST_MCP_PORT:-18089}
+      GPU_MCP_PUBLIC_URL: ""
+    ports: !override
+      - "127.0.0.1::8080"
+    volumes: !override
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/data
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/secrets/feishu-settings
+        target: /app/secrets/feishu-settings
+        bind:
+          create_host_path: false
+  mcp:
+    image: ${GPU_TEST_IMAGE:?set GPU_TEST_IMAGE}
+    environment:
+      GPU_READ_ONLY: "1"
+      GPU_BIND_IP: "127.0.0.1"
+      GPU_MCP_BIND_PORT: ${GPU_TEST_MCP_PORT:-18089}
+      GPU_MCP_PUBLIC_URL: ""
+    ports: !override
+      - "127.0.0.1:${GPU_TEST_MCP_PORT:-18089}:8080"
+    volumes: !override
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/data
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/secrets/feishu-settings
+        target: /app/secrets/feishu-settings
+        read_only: true
+        bind:
+          create_host_path: false
+  worker:
+    image: ${GPU_TEST_IMAGE:?set GPU_TEST_IMAGE}
+    environment:
+      GPU_READ_ONLY: "1"
+    networks:
+      - test_worker
+    volumes: !override
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/data
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GPU_TEST_DIR:?set GPU_TEST_DIR}/secrets
+        target: /app/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+
+networks:
+  test_worker:
+    internal: true

@@ -1,0 +1,28 @@
+{
+  "name": "gpu-console-web",
+  "version": "0.30.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "echarts": "^6.0.0",
+    "element-plus": "^2.14.8",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "~5.9.0",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^7.0.0",
+    "vue-tsc": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

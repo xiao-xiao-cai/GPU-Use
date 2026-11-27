@@ -1,0 +1,123 @@
+name: gpu-console
+
+x-runtime: &runtime
+  image: ${GPU_IMAGE:-gpu-console:0.30.1}
+  restart: on-failure
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=24m,mode=1777
+  environment:
+    GPU_READ_ONLY: ${GPU_READ_ONLY:-0}
+    GPU_COOKIE_SECURE: ${GPU_COOKIE_SECURE:-0}
+  stop_grace_period: 30s
+  mem_limit: 384m
+  pids_limit: 64
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "2"
+
+x-data: &data
+  type: bind
+  source: ./data
+  target: /app/data
+  bind:
+    create_host_path: false
+
+services:
+  web:
+    <<: *runtime
+    build:
+      context: .
+      args:
+        GPU_REVISION: ${GPU_REVISION:-unknown}
+    command: ["gpu-admin", "web"]
+    cpus: 0.75
+    environment:
+      GPU_READ_ONLY: ${GPU_READ_ONLY:-0}
+      GPU_COOKIE_SECURE: ${GPU_COOKIE_SECURE:-0}
+      GPU_BIND_IP: ${GPU_BIND_IP:-127.0.0.1}
+      GPU_BIND_PORT: ${GPU_BIND_PORT:-18080}
+      GPU_MCP_BIND_PORT: ${GPU_MCP_BIND_PORT:-18081}
+      GPU_MCP_PUBLIC_URL: ${GPU_MCP_PUBLIC_URL:-}
+    ports:
+      - "${GPU_BIND_IP:-127.0.0.1}:${GPU_BIND_PORT:-18080}:8080"
+    volumes:
+      - *data
+      - type: bind
+        source: ./secrets/feishu-settings
+        target: /app/secrets/feishu-settings
+        bind:
+          create_host_path: false
+    healthcheck: &http-health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  mcp:
+    <<: *runtime
+    command: ["gpu-admin", "mcp"]
+    cpus: 0.5
+    environment:
+      GPU_READ_ONLY: ${GPU_READ_ONLY:-0}
+      GPU_BIND_IP: ${GPU_BIND_IP:-127.0.0.1}
+      GPU_BIND_PORT: ${GPU_BIND_PORT:-18080}
+      GPU_MCP_BIND_PORT: ${GPU_MCP_BIND_PORT:-18081}
+      GPU_MCP_PUBLIC_URL: ${GPU_MCP_PUBLIC_URL:-}
+      GPU_MCP_TRUSTED_HOSTS: ${GPU_MCP_TRUSTED_HOSTS:-}
+      GPU_MCP_TRUSTED_ORIGINS: ${GPU_MCP_TRUSTED_ORIGINS:-}
+      GPU_MCP_RELEASE_CHARGE_TYPES: ${GPU_MCP_RELEASE_CHARGE_TYPES-Postpay}
+    ports:
+      - "${GPU_BIND_IP:-127.0.0.1}:${GPU_MCP_BIND_PORT:-18081}:8080"
+      - "127.0.0.1:${GPU_MCP_BIND_PORT:-18081}:8080"
+    volumes:
+      - *data
+      - type: bind
+        source: ./secrets/feishu-settings
+        target: /app/secrets/feishu-settings
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck: *http-health
+
+  worker:
+    <<: *runtime
+    environment:
+      GPU_READ_ONLY: ${GPU_READ_ONLY:-0}
+      GPU_COOKIE_SECURE: ${GPU_COOKIE_SECURE:-0}
+      GPU_BIND_IP: ${GPU_BIND_IP:-127.0.0.1}
+      GPU_BIND_PORT: ${GPU_BIND_PORT:-18080}
+      GPU_SCHEDULER_OMITS_EMPTY: ${GPU_SCHEDULER_OMITS_EMPTY:-0}
+      GPU_SSH_PROXY: ${GPU_SSH_PROXY:-}
+      GPU_MCP_RELEASE_CHARGE_TYPES: ${GPU_MCP_RELEASE_CHARGE_TYPES-Postpay}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["gpu-admin", "worker"]
+    init: true
+    cpus: 0.5
+    volumes:
+      - *data
+      - type: bind
+        source: ./secrets
+        target: /app/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "gpu-admin", "worker-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  default:
+    driver_opts:
+      com.docker.network.driver.mtu: "${GPU_DOCKER_MTU:-1500}"

@@ -1,0 +1,33 @@
+[project]
+name = "gpu-console"
+version = "0.30.1"
+description = "CompShare GPU experiment console"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alibabacloud-dm20151123>=1.11.1",
+    "fastapi>=0.165.0",
+    "httpx>=0.28.1",
+    "mcp==2.3.0",
+    "pwdlib[argon2]>=0.4.2",
+    "ucloud-sdk-python3==0.11.161",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+gpu-admin = "gpu_console.cli:main"
+gpu-ssh-askpass = "gpu_console.adapters.openssh:askpass"
+
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpu_console"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

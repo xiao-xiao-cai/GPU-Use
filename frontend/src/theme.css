@@ -1,0 +1,31 @@
+:root:root {
+  --el-font-family: "Instrument Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --el-color-primary: #006b62;
+  --el-color-primary-light-3: #157d73;
+  --el-color-primary-light-5: #309188;
+  --el-color-primary-light-7: #8ec3bb;
+  --el-color-primary-light-8: #bddbd5;
+  --el-color-primary-light-9: #e3f1ee;
+  --el-color-primary-dark-2: #00544d;
+  --el-color-success: #287446;
+  --el-color-success-light-9: #e6f3e9;
+  --el-color-warning: #77501d;
+  --el-color-warning-light-9: #fff3d9;
+  --el-color-danger: #a03634;
+  --el-color-danger-light-9: #fff0ec;
+  --el-color-error: #a03634;
+  --el-color-error-light-9: #fff0ec;
+  --el-color-info: #4e666e;
+  --el-color-info-light-9: #edf3f4;
+  --el-text-color-primary: #18343e;
+  --el-text-color-regular: #304e57;
+  --el-text-color-secondary: #4e666e;
+  --el-text-color-placeholder: #5b7178;
+  --el-border-color: #9cb7b2;
+  --el-border-color-light: #d1ddda;
+  --el-border-color-lighter: #e0e8e5;
+  --el-fill-color: #eaf1ee;
+  --el-fill-color-light: #f1f6f4;
+  --el-bg-color-page: #f0f4f2;
+  --el-border-radius-base: 6px;
+}

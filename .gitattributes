@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+*.png binary !eol
+*.jpg binary !eol
+*.jpeg binary !eol
+*.webp binary !eol
+*.ico binary !eol
+*.woff2 binary !eol
+*.pdf binary !eol
+*.db binary !eol
+*.sqlite binary !eol
+*.sqlite3 binary !eol
+*.bundle binary !eol

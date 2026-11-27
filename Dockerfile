@@ -29,7 +29,7 @@ RUN nice -n 19 ionice -c3 apt-get update \
     && nice -n 19 ionice -c3 apt-get install -y --no-install-recommends netcat-openbsd openssh-client \
     && rm -rf /var/lib/apt/lists/*
 ARG GPU_REVISION=unknown
-LABEL org.opencontainers.image.title="GPU 实验管理台" org.opencontainers.image.version="0.30.1" \
+LABEL org.opencontainers.image.title="GPU 实验管理台" org.opencontainers.image.version="0.30.2" \
       org.opencontainers.image.revision=${GPU_REVISION}
 WORKDIR /app
 ENV PATH=/app/.venv/bin:$PATH \

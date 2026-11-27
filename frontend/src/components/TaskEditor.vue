@@ -8,7 +8,7 @@ import {
   request, type BootMode, type CardlessSpec, type Channel, type Instance, type InstanceStorageSelection, type NotificationEvent, type Preview, type Schedule,
   type Spec, type Task, type TaskConfig, type TaskDraft, type TaskKind, type Template, type Zone,
 } from '../api/client'
-import { chargeLabels, errorMessage, instanceLabels, localInput, timeLabel, unixTime, useSnapshot } from '../display'
+import { cardlessProfileLabel, cardlessUnavailable, chargeLabels, errorMessage, instanceLabels, localInput, timeLabel, unixTime, useSnapshot } from '../display'
 
 const props = defineProps<{
   projectId: string
@@ -235,7 +235,7 @@ function draft(): TaskDraft {
     Object.assign(config, { instance_id: instance.value.id, region: instance.value.region, zone: instance.value.zone })
   }
   if (kind.value === 'start' && bootMode.value === 'without_gpu') {
-    if (!cardlessProfiles.value.some(profile => profile.spec === cardlessSpec.value)) throw new Error('请选择已核实的无卡档位。')
+    if (!cardlessProfiles.value.some(profile => profile.spec === cardlessSpec.value)) throw new Error('请选择可用的无卡开机配置。')
     config.boot_mode = bootMode.value
     config.without_gpu_spec = cardlessSpec.value
   }
@@ -320,7 +320,7 @@ function advance() {
     }
     if (kind.value === 'start' && bootMode.value === 'without_gpu'
       && !cardlessProfiles.value.some(profile => profile.spec === cardlessSpec.value)) {
-      invalidField('cardless', '请选择已核实的无卡档位。')
+      invalidField('cardless', '请选择可用的无卡开机配置。')
       return
     }
     const specError = changes.value ? specFields.value?.validate() : ''
@@ -496,13 +496,13 @@ onScopeDispose(() => {
               <ElOption value="with_gpu" label="有卡开机" />
               <ElOption value="without_gpu" label="无卡开机" :disabled="!cardlessProfiles.length" />
             </ElSelect>
-            <span v-if="instance && !cardlessProfiles.length" class="muted">不支持无卡开机，或此可用区的档位尚未核实。</span>
+            <span v-if="instance && !cardlessProfiles.length" class="muted">{{ cardlessUnavailable(instance) }}</span>
           </ElFormItem>
-          <ElFormItem v-if="kind === 'start' && bootMode === 'without_gpu'" label="无卡档位" for="task-cardless"
+          <ElFormItem v-if="kind === 'start' && bootMode === 'without_gpu'" label="无卡开机配置" for="task-cardless"
             :error="fieldError === 'cardless' ? editorError : undefined">
             <ElSelect id="task-cardless" v-model="cardlessSpec">
               <ElOption v-for="profile in cardlessProfiles" :key="profile.spec" :value="profile.spec"
-                :label="`${profile.spec} · ${profile.cpu} 核 / ${profile.memory_gb} GB${profile.standard_hourly_cny == null ? ' · 待核价' : ` · 官方 ¥${profile.standard_hourly_cny}/时`}`" />
+                :label="cardlessProfileLabel(profile)" />
             </ElSelect>
           </ElFormItem>
         </div>
@@ -647,7 +647,7 @@ onScopeDispose(() => {
             {{ timeLabel(preview.deadline_at) }}
           </ElDescriptionsItem>
           <ElDescriptionsItem v-if="preview.boot_mode" label="开机模式">
-            {{ preview.boot_mode === 'without_gpu' ? `无卡 · 档位 ${preview.without_gpu_spec}` : '有卡' }}
+            {{ preview.boot_mode === 'without_gpu' ? `无卡 · ${cardlessProfileLabel(cardlessProfiles.find(profile => profile.spec === preview?.without_gpu_spec))}` : '有卡' }}
           </ElDescriptionsItem>
           <ElDescriptionsItem v-if="preview.shutdown_after_seconds" label="每轮关机规则">
             本轮实际开机后运行 {{ Number((preview.shutdown_after_seconds / 60).toFixed(2)) }} 分钟；已运行时保留原预约

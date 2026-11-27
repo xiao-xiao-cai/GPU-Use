@@ -13,6 +13,7 @@ from gpu_console import storage
 from gpu_console.api.resources import configured_feishu
 from gpu_console.application import instance_quotes, instance_release
 from gpu_console.application.purchase_options import create_options
+from gpu_console.application.task_config import BootMode, CardlessSpec
 from gpu_console.application.tasks import TaskStore
 from gpu_console.config import Config
 from gpu_console.mcp.common import issue_preview, mutate, read_preview, require_manager
@@ -228,9 +229,9 @@ def register(server: ConsoleMCPServer, config: Config) -> None:
 
     @server.scoped_tool("manage", name="gpu_start_instance", annotations=write)
     def start_instance(project_id: Id, instance_id: Id, request_id: Id,
-                       boot_mode: Literal["with_gpu", "without_gpu"] | None = None,
-                       without_gpu_spec: Literal["A", "B"] | None = None) -> RunReceipt:
-        """请求启动现有实例。默认有卡；无卡需指定已核实的档位。实际运行模式和结果以回读为准。"""
+                       boot_mode: BootMode | None = None,
+                       without_gpu_spec: CardlessSpec | None = None) -> RunReceipt:
+        """请求启动现有实例。默认有卡；无卡需选择实例可用的配置。实际运行模式和结果以回读为准。"""
         fields = {key: value for key, value in {"boot_mode": boot_mode, "without_gpu_spec": without_gpu_spec}.items()
                   if value is not None and (key != "boot_mode" or value != "with_gpu")}
         return _action(config, project_id, instance_id, "start", request_id, **fields)

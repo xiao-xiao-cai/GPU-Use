@@ -30,17 +30,19 @@ def snapshot(data, *, freshness=5):
     return {"data": data, "success_at": now() - freshness, "error": None}
 
 
-def sample_instances(project):
+def sample_instances(project, scenario="normal"):
     if project != "sample":
         return [{"id": "other", "project_id": project, "name": "另一项目", "state": "Stopped"}]
-    return [
+    rows = [
         {
             "id": instance_id, "project_id": project, "name": name, "state": state,
             "region": "cn-east", "zone": "cn-east-01", "gpu_model": "A100", "gpu": gpu,
             "gpu_mode": "with_gpu" if state == "Running" else None, "cpu": 16, "memory_gb": 64, "charge_type": "Postpay",
             "login_mode": "Password", "scheduler_status": "known", "support_without_gpu_start": True,
-            "cardless_profiles": [{"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"}]
-            if instance_id == "spare-c" else [],
+            "cardless_profiles": [
+                {"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"},
+                {"spec": "C", "cpu": 4, "memory_gb": 8, "standard_hourly_cny": "0.30"},
+            ] if instance_id == "spare-c" else [],
             "jupyter": {"url": f"https://{instance_id}.example.invalid/lab" if url else None,
                         "source": "platform" if url else None},
             "ssh": {"user": "root", "host": "192.0.2.10", "port": 22, "command": "ssh root@192.0.2.10"},
@@ -52,6 +54,22 @@ def sample_instances(project):
             ("spare-c", "备用实例 C", "Stopped", 1, True),
         ]
     ]
+    if scenario != "shutdown-stock":
+        return rows
+    stopped = rows[-1]
+    stock = {"pool": "exclusive", "required_cards": 1, "state": "known", "remaining_cards": 25,
+             "provider_updated_at": now(), "spec_available": True, "spec_checked_at": now()}
+    return [*rows[:-1], stopped | {"stock": stock}, *[
+        stopped | {"id": instance_id, "name": name, "gpu_model": model, "gpu": gpu,
+                   "stock": stock | stock_fields, "cardless_profiles": []}
+        for instance_id, name, model, gpu, stock_fields in [
+            ("pool-only", "待确认开机的 4090", "4090", 0, {"required_cards": None, "spec_available": None, "spec_checked_at": None}),
+            ("pool-empty", "没有库存的 5090", "5090", 1, {"remaining_cards": 0, "spec_available": False}),
+            ("pool-blocked", "有卡但暂不能开机", "A100", 1, {"spec_available": False}),
+            ("pool-expired", "库存过期的实例", "A100", 1, {"state": "stale", "remaining_cards": None}),
+        ]
+    ], stopped | {"id": "pool-starting", "name": "正在开机的实例", "stock": stock,
+                  "active_operation": {"kind": "start", "state": "reconciling", "capacity_wait": False}}]
 
 
 def scheduled_task():
@@ -324,7 +342,7 @@ ACTION_NAMES = {
 
 
 def sample_detail(project, instance_id, scenario):
-    instance = next((item for item in sample_instances(project) if item["id"] == instance_id), None)
+    instance = next((item for item in sample_instances(project, scenario) if item["id"] == instance_id), None)
     if instance is None:
         return None
     if instance_id == "train-a":
@@ -509,7 +527,7 @@ class FixtureHandler(SimpleHTTPRequestHandler):
                 projects["error"] = "模拟上次项目同步失败"
             return self.send_json(projects)
         if path == "/instances":
-            return self.send_json(snapshot(sample_instances(project), freshness=600 if scenario == "stale" else 5))
+            return self.send_json(snapshot(sample_instances(project, scenario), freshness=600 if scenario == "stale" else 5))
         if path.startswith("/instances/"):
             return self.handle_instance(path, project, scenario, parameters, body)
         if path == "/actions" and self.command == "POST":

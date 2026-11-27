@@ -244,33 +244,40 @@ def scheduled_start(store, *, at=NOW, schedule_type="once", capacity_retry=True)
     })
 
 
-def cardless_task(store, target):
+def cardless_task(store, target, tier="B", profile=(8, 16)):
+    scope = {key: target[key] for key in ("region", "zone")}
     with storage.connect(store.path) as conn, storage.transaction(conn):
         conn.execute("INSERT INTO snapshots VALUES ('instances','p1',?,?,NULL)", (json.dumps([target]), NOW))
-        cardless.record_profile(conn, ZONES[1] | {"spec": "B", "cpu": 8, "memory_gb": 16})
+        if profile is not None:
+            cardless.record_profile(conn, scope | {"spec": tier, "cpu": profile[0], "memory_gb": profile[1]})
     return store.create_task({
         "name": "循环无卡开机", "kind": "start", "project_id": "p1",
         "schedule": {"type": "interval", "at": NOW, "interval_seconds": 60},
-        "config": ZONES[1] | {"instance_id": "id1", "boot_mode": "without_gpu", "without_gpu_spec": "B",
-                              "shutdown_after_seconds": 900},
+        "config": scope | {"instance_id": "id1", "boot_mode": "without_gpu", "without_gpu_spec": tier,
+                           "shutdown_after_seconds": 900},
     })
 
 
-def test_cardless_cycle_binds_one_shutdown_to_actual_boot_and_never_adopts_the_next_cycle(runtime):
+@pytest.mark.parametrize(("tier", "cpu", "memory_gb", "zone"), [
+    ("A", 2, 4, {"region": "cn-sh2", "zone": "cn-sh2-01"}),
+    ("B", 8, 16, {"region": "cn-wlcb", "zone": "cn-wlcb-01"}),
+    ("C", 4, 8, {"region": "cn-wlcb", "zone": "cn-wlcb-01"}),
+])
+def test_cardless_cycle_binds_one_shutdown_to_actual_boot_and_never_adopts_the_next_cycle(runtime, tier, cpu, memory_gb, zone):
     store, cloud, clock, runner = runtime
     target = instance(state="Stopped", support_without_gpu_start=True, start_time=NOW - 1800,
-                      scheduler_status="known", scheduler_stop_time=None)
+                      scheduler_status="known", scheduler_stop_time=None, **zone)
     cloud.instances_by_region = [target]
-    task = cardless_task(store, target)
+    task = cardless_task(store, target, tier, profile=None)
     runner.tick()
     [first] = store.list_runs(task_id=task["id"])
-    assert first["state"] == "reconciling" and cloud.writes == [("start_without_gpu", "id1", "B")]
-    target.update(state="Running", gpu=0, gpu_mode="without_gpu", cpu=2, memory_gb=4, start_time=NOW + 3)
+    assert first["state"] == "reconciling" and cloud.writes == [("start_without_gpu", "id1", tier)]
+    target.update(state="Running", gpu=0, gpu_mode="without_gpu", cpu=1, memory_gb=2, start_time=NOW + 3)
     runner = TaskRunner(store, cloud)
     clock.advance()
     runner.tick()
     assert store.get_run(first["id"])["state"] == "reconciling"
-    target.update(cpu=8, memory_gb=16)
+    target.update(cpu=cpu, memory_gb=memory_gb)
     clock.advance()
     runner.tick()
     finished = store.get_run(first["id"])
@@ -282,7 +289,7 @@ def test_cardless_cycle_binds_one_shutdown_to_actual_boot_and_never_adopts_the_n
     clock.advance(60)
     runner.tick()
     runner.tick()
-    assert cloud.writes == [("start_without_gpu", "id1", "B"), ("set_shutdown", "id1", NOW + 903)]
+    assert cloud.writes == [("start_without_gpu", "id1", tier), ("set_shutdown", "id1", NOW + 903)]
     [repeat, original] = [run for run in store.list_runs(task_id=task["id"]) if run["kind"] == "start"]
     assert original["id"] == first["id"] and repeat["result"]["disposition"] == "reused"
     assert "shutdown_run_id" not in repeat["result"]
@@ -332,7 +339,7 @@ def test_unverified_cardless_profile_cannot_create_task_or_dispatch_queued_run(r
     task = cardless_task(store, target)
     with storage.connect(store.path) as conn, storage.transaction(conn):
         conn.execute("DELETE FROM cardless_profiles")
-    with pytest.raises(ValueError, match="未核实"):
+    with pytest.raises(ValueError, match="未开放"):
         store.create_task(task)
     runner.tick()
     [run] = store.list_runs(task_id=task["id"])

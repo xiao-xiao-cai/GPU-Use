@@ -50,20 +50,24 @@ def console(tmp_path, monkeypatch):
         yield web, config.db, now
 
 
-def test_cardless_web_and_mcp_share_profile_gate_and_start_snapshot(console):
+@pytest.mark.parametrize("tier", ["B", "C"])
+def test_cardless_web_and_mcp_share_profile_gate_and_start_snapshot(console, tier):
     web, db, _ = console
     instance_id = INSTANCE["id"]
     with storage.connect(db) as conn, storage.transaction(conn):
-        snapshot(conn, "instances", PROJECT, [INSTANCE | {"support_without_gpu_start": True}])
         token = auth.issue(conn, name="Cardless test", manage=True, ssh=False, days=None)["token"]
     body = {"project_id": PROJECT, "instance_id": instance_id, "kind": "start", "boot_mode": "without_gpu",
-            "without_gpu_spec": "B", "request_id": "cardless-web"}
+            "without_gpu_spec": tier, "request_id": "cardless-web"}
     headers = {"X-CSRF-Token": "csrf"}
     assert web.post("/api/actions", json=body, headers=headers).status_code == 422
     with storage.connect(db) as conn, storage.transaction(conn):
-        cardless.record_profile(conn, ZONE | {"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"})
+        snapshot(conn, "instances", PROJECT, [INSTANCE | {"support_without_gpu_start": True}])
+    assert web.post("/api/actions", json=body | {"without_gpu_spec": "A"}, headers=headers).status_code == 422
     detail = web.get(f"/api/instances/{instance_id}", params={"project_id": PROJECT}).json()["data"]
-    assert detail["cardless_profiles"] == [{"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"}]
+    assert detail["cardless_profiles"] == [
+        {"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"},
+        {"spec": "C", "cpu": 4, "memory_gb": 8, "standard_hourly_cny": "0.30"},
+    ]
     submitted = web.post("/api/actions", json=body, headers=headers)
     assert submitted.status_code == 202, submitted.text
     preview = web.post("/api/tasks/preview", headers=headers, json={
@@ -74,12 +78,79 @@ def test_cardless_web_and_mcp_share_profile_gate_and_start_snapshot(console):
     config = Config(db.parent, db.parent / "secrets", db.parent / "static", False, False)
     with TestClient(create_mcp_app(config), base_url=f"http://{config.mcp_bind_ip}:{config.mcp_bind_port}") as mcp:
         args = {key: value for key, value in body.items() if key not in {"kind", "request_id"}} | {"request_id": "cardless-mcp"}
+        rejected = mcp.post("/mcp", headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-11-25",
+        }, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "gpu_start_instance", "arguments": args | {"without_gpu_spec": "A"},
+        }})
+        assert rejected.status_code == 200 and rejected.json()["result"]["isError"]
+        assert "未开放" in str(rejected.json()["result"]["content"])
         receipt = call_tool(mcp, token, "gpu_start_instance", args)
         assert call_tool(mcp, token, "gpu_start_instance", args) == receipt
         queued = call_tool(mcp, token, "gpu_get_run", {"project_id": PROJECT, "run_id": receipt["run_id"]})
-        assert queued["target"]["without_gpu_spec"] == "B"
+        assert queued["target"]["without_gpu_spec"] == tier
         instance = call_tool(mcp, token, "gpu_get_instance", {"project_id": PROJECT, "instance_id": instance_id})
         assert instance["instance"]["cardless_profiles"] == detail["cardless_profiles"]
+
+
+@pytest.mark.parametrize(("region", "zone", "expected"), [
+    ("cn-wlcb", "cn-wlcb-01", [("B", 8, 16), ("C", 4, 8)]),
+    ("cn-sh2", "cn-sh2-02", [("B", 8, 16), ("C", 4, 8)]),
+    ("cn-bj2", "cn-bj2-03", [("A", 2, 4)]),
+    ("cn-sh2", "cn-sh2-01", [("A", 2, 4)]),
+    ("cn-sh2", "cn-sh2-03", [("A", 2, 4)]),
+    ("unknown", "unknown-01", []),
+])
+def test_cardless_options_follow_the_zone_for_any_supported_gpu_configuration(console, region, zone, expected):
+    web, db, _ = console
+    target = INSTANCE | {"region": region, "zone": zone, "support_without_gpu_start": True}
+    variants = [target, target | {"id": "uhost-5090", "gpu_model": "5090", "gpu": 2, "cpu": 32, "memory_gb": 96}]
+    with storage.connect(db) as conn, storage.transaction(conn):
+        snapshot(conn, "instances", PROJECT, variants)
+    items = web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]
+    assert len(items) == len(variants)
+    for item in items:
+        assert [(profile["spec"], profile["cpu"], profile["memory_gb"])
+                for profile in item["cardless_profiles"]] == expected
+
+
+@pytest.mark.parametrize("override", [
+    {"charge_type": "Spot"}, {"charge_type": "Month"}, {"gpu_model": "NVIDIA A800"},
+    {"support_without_gpu_start": False}, {"support_without_gpu_start": None},
+])
+def test_cardless_eligibility_applies_even_in_a_supported_zone(console, override):
+    web, db, _ = console
+    target = INSTANCE | {"support_without_gpu_start": True} | override
+    with storage.connect(db) as conn, storage.transaction(conn):
+        snapshot(conn, "instances", PROJECT, [target])
+    [item] = web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]
+    assert item["cardless_profiles"] == []
+    denied = web.post("/api/actions", headers={"X-CSRF-Token": "csrf"}, json={
+        "project_id": PROJECT, "instance_id": target["id"], "kind": "start", "boot_mode": "without_gpu",
+        "without_gpu_spec": "B", "request_id": "cardless-ineligible",
+    })
+    assert denied.status_code == 422
+
+
+def test_cardless_defaults_preserve_compatible_profile_records(console):
+    _, db, _ = console
+    profile = {"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.55"}
+    wrong_tier = {"spec": "A", "cpu": 2, "memory_gb": 4}
+    wrong_size = {"spec": "C", "cpu": 2, "memory_gb": 4}
+    unknown = ("other-region", "other-zone")
+    scope = ZONE["region"], ZONE["zone"]
+    with storage.connect(db) as conn, storage.transaction(conn):
+        cardless.record_profile(conn, ZONE | profile)
+        cardless.record_profile(conn, {"region": unknown[0], "zone": unknown[1]} | profile)
+        for invalid in (wrong_tier, wrong_size):
+            with pytest.raises(ValueError, match="已知规格不符"):
+                cardless.record_profile(conn, ZONE | invalid)
+            conn.execute("INSERT INTO cardless_profiles VALUES (?,?,?,?,?,NULL)",
+                         (*scope, invalid["spec"], invalid["cpu"], invalid["memory_gb"]))
+        resolved = cardless.profiles(conn)
+    assert resolved[scope] == [profile, {"spec": "C", "cpu": 4, "memory_gb": 8, "standard_hourly_cny": "0.30"}]
+    assert resolved[unknown] == [profile]
 
 
 class ResizeCloud:
@@ -202,6 +273,33 @@ def test_stopped_instance_probes_its_saved_configuration_without_boot_history(co
     assert item["stock"]["remaining_cards"] == 0
     assert item["stock"]["spec_available"] is False
     assert item["stock"]["spec_checked_at"] == NOW
+
+
+@pytest.mark.parametrize("gpu", [0, None])
+def test_stopped_instance_with_unknown_boot_configuration_still_shows_its_pool(console, gpu):
+    web, db, now = console
+    cardless = INSTANCE | {"gpu": gpu, "cpu": 8, "memory_gb": 16}
+    spot = cardless | {"id": "uhost-spot", "charge_type": "Spot"}
+    cpu_only = cardless | {"id": "uhost-cpu", "gpu_model": None}
+    running = cardless | {"id": "uhost-running", "state": "Running"}
+    with storage.connect(db) as conn, storage.transaction(conn):
+        snapshot(conn, "instances", PROJECT, [cardless, spot, cpu_only, running])
+        availability.record_pool(conn, ZONE["region"], NOW, provider_updated_at=NOW,
+                                 counts={(ZONE["zone"], "4090", "exclusive"): 25, (ZONE["zone"], "4090", "spot"): 0})
+
+    def items():
+        return {item["id"]: item for item in web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]}
+
+    current = items()
+    stock = current[INSTANCE["id"]]["stock"]
+    assert (stock["pool"], stock["state"], stock["remaining_cards"]) == ("exclusive", "known", 25)
+    assert stock["required_cards"] is stock["spec_available"] is stock["spec_checked_at"] is None
+    assert current[INSTANCE["id"]]["gpu"] == gpu
+    assert current["uhost-spot"]["stock"]["remaining_cards"] == 0
+    assert current["uhost-cpu"]["stock"] is current["uhost-running"]["stock"] is None
+    now[0] += availability.POOL_FRESHNESS + 1
+    expired = items()[INSTANCE["id"]]["stock"]
+    assert expired["state"] == "stale" and expired["remaining_cards"] is None
 
 
 def test_platform_wire_contract_for_resize_and_udisk_price():

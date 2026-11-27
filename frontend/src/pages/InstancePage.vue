@@ -69,13 +69,16 @@ const shownInstances = computed(() => {
   ).map(instance => ({
     instance,
     status: instanceStatus(instance),
+    stock: stockStatus(instance),
     connection: jupyterConnection(instance),
     schedule: scheduleLabel(instance),
   }))
 })
 
-function instanceStatus(instance: Instance): { label: string; type: 'info' | 'warning' | 'success'; title?: string } {
-  if (instance.state === 'Running') return { label: '正在运行', type: 'success' }
+type StatusBadge = { label: string; type: 'info' | 'warning' | 'success'; title?: string }
+
+function instanceStatus(instance: Instance): StatusBadge {
+  if (instance.state === 'Running') return { label: instance.gpu_mode === 'without_gpu' ? '无卡运行' : '正在运行', type: 'success' }
   if (instance.state !== 'Stopped') return { label: instanceLabels[instance.state] || instance.state || '状态未知', type: 'info' }
   const operation = instance.active_operation
   if (operation) {
@@ -86,17 +89,25 @@ function instanceStatus(instance: Instance): { label: string; type: 'info' | 'wa
       ? { label: '等待资源', type: 'warning' } : { label: '启动中', type: 'info' }
     return { label: '操作处理中', type: 'info' }
   }
+  return { label: '已关机', type: 'info' }
+}
+
+function stockStatus(instance: Instance): StatusBadge | undefined {
   const stock = instance.stock
-  if (!stock) return { label: '已关机', type: 'info' }
+  if (instance.state !== 'Stopped' || instance.active_operation || !stock) return
   const pool = stock.pool === 'spot' ? '抢占池' : stock.pool === 'exclusive' ? '普通池' : '资源池'
-  const title = '已关机 · ' + pool + '更新 ' + timeLabel(stock.provider_updated_at)
-    + (stock.spec_checked_at ? ' · 规格探测 ' + timeLabel(stock.spec_checked_at) : '')
-  if (staleSnapshot.value) return { label: '库存待同步', type: 'info', title }
-  const count = stock.state === 'known' && stock.remaining_cards !== null ? ` · 池余 ${stock.remaining_cards} 张` : ''
-  if (stock.spec_available === true) return { label: '有卡' + count, type: 'success', title }
-  if (stock.spec_available === false) return { label: '暂无可用资源' + count, type: 'warning', title }
-  if (stock.state === 'unsupported') return { label: '资源池不支持', type: 'info', title }
-  return { label: '规格待核对' + count, type: 'info', title }
+  const title = pool + '更新时间 ' + timeLabel(stock.provider_updated_at)
+    + (stock.spec_checked_at ? ' · 开机检查时间 ' + timeLabel(stock.spec_checked_at) : '')
+  if (staleSnapshot.value || stock.state === 'stale') return { label: '库存待更新', type: 'info', title }
+  if (stock.state === 'unsupported') return { label: '暂无此类库存', type: 'info', title }
+  const remaining = stock.state === 'known' ? stock.remaining_cards : null
+  if (remaining === 0) return { label: '暂时无卡 · 池余 0 张', type: 'warning', title }
+  const prefix = remaining === null ? '' : `当前有卡 · 池余 ${remaining} 张 · `
+  if (stock.spec_available === false || (remaining !== null && stock.required_cards !== null && remaining < stock.required_cards)) {
+    return { label: prefix + '暂不能有卡开机', type: 'warning', title }
+  }
+  if (stock.spec_available === true) return { label: prefix + '可有卡开机', type: 'success', title }
+  return { label: prefix ? prefix + '有卡开机待确认' : '库存待更新', type: 'info', title }
 }
 
 function jupyterConnection(instance: Instance) {
@@ -225,16 +236,19 @@ onMounted(() => {
             </div>
 
             <ul v-if="shownInstances.length" class="overview-grid">
-              <li v-for="{ instance, status, connection, schedule } in shownInstances" :key="instance.id">
+              <li v-for="{ instance, status, stock, connection, schedule } in shownInstances" :key="instance.id">
                 <ElCard class="overview-instance" shadow="never">
                   <div class="overview-instance-head">
                     <h3><a :id="'instance-card-' + instance.id" :href="instanceLink(instance)">{{ instance.name || instance.id }}</a></h3>
                     <ElTag :type="status.type" :title="status.title || status.label" effect="light" size="small" class="overview-instance-status">{{ status.label }}</ElTag>
                   </div>
                   <div class="overview-instance-gpu">
-                    <strong>{{ instance.gpu_model || 'GPU 型号未知' }}<span v-if="instance.gpu != null"> × {{ instance.gpu }}</span></strong>
+                    <strong>{{ instance.gpu_model || 'GPU 型号未知' }}<span v-if="instance.gpu && instance.gpu > 0"> × {{ instance.gpu }}</span></strong>
                     <span v-if="schedule" class="overview-instance-schedule">{{ schedule }}</span>
                   </div>
+                  <ElTag v-if="stock" :type="stock.type" :title="stock.title" effect="light" size="small" class="overview-instance-stock">
+                    {{ stock.label }}
+                  </ElTag>
                   <div class="overview-connections">
                     <ElButton v-if="connection.href" tag="a" type="primary" :href="connection.href" target="_blank" rel="noopener noreferrer">
                       {{ connection.label }} <TopRight class="overview-external-icon" aria-hidden="true" />
@@ -349,6 +363,7 @@ onMounted(() => {
 .overview-instance-gpu { flex-wrap: wrap; align-items: baseline; margin-top: 4px; font-family: var(--mono); overflow-wrap: anywhere; }
 .overview-instance-gpu strong { font-weight: 650; }
 .overview-instance-schedule { color: var(--warning); font-size: .8rem; }
+.overview-instance-stock { max-width: 100%; height: auto; min-height: 20px; margin-top: 6px; padding-block: 2px; line-height: 1.35; white-space: normal; }
 .overview-connections {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);

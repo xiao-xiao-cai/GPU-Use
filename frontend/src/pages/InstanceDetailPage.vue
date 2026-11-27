@@ -10,7 +10,7 @@ import { copyText } from '../clipboard'
 import InstanceConnections from '../components/InstanceConnections.vue'
 import InstanceIdleSnooze from '../components/InstanceIdleSnooze.vue'
 import InstanceNetwork from '../components/InstanceNetwork.vue'
-import { awaitingInstanceReview, chargeLabels, errorMessage, instanceLabels, localInput, timeLabel, unixTime } from '../display'
+import { awaitingInstanceReview, cardlessProfileLabel, cardlessUnavailable, chargeLabels, errorMessage, instanceLabels, localInput, timeLabel, unixTime } from '../display'
 
 const MetricChart = defineAsyncComponent(() => import('../components/MetricChart.vue'))
 const DashboardCost = defineAsyncComponent(() => import('../components/dashboard/DashboardCost.vue'))
@@ -93,7 +93,7 @@ const stateLabel = computed(() => {
   const state = instanceLabels[instance.state] ?? instance.state
   if (instance.state !== 'Running') return state
   if (instance.gpu_mode === 'with_gpu') return '有卡运行'
-  if (instance.gpu_mode === 'without_gpu') return instance.without_gpu_spec ? `无卡运行 · ${instance.without_gpu_spec} 档` : '无卡运行'
+  if (instance.gpu_mode === 'without_gpu') return '无卡运行'
   return '正在运行 · 模式待确认'
 })
 const appointment = computed(() => detailCurrent.value?.shutdown_cleanup_pending ? '旧预约清理待确认'
@@ -346,6 +346,7 @@ let actionTrigger: HTMLElement | undefined
 const action = ref<Action | null>(null)
 const actionTitle = computed(() => !action.value ? '' : action.value.boot_mode === 'without_gpu' ? '无卡开机' : actionLabels[action.value.kind])
 const cardlessProfiles = computed(() => details.value?.cardless_profiles ?? [])
+const cardlessStandardPrice = computed(() => cardlessProfiles.value.find(profile => profile.spec === action.value?.without_gpu_spec)?.standard_hourly_cny)
 const stopAt = ref('')
 const originalAppointment = ref<number | null>(null)
 const replace = ref(false)
@@ -451,7 +452,7 @@ async function submitAction() {
   actionError.value = ''
   actionFieldError.value = ''
   if (action.value.boot_mode === 'without_gpu' && !cardlessProfiles.value.some(profile => profile.spec === action.value?.without_gpu_spec)) {
-    actionFieldError.value = '请选择已核实的无卡档位。'
+    actionFieldError.value = '无卡开机配置已变化，请重新选择。'
     return
   }
   if (action.value.kind === 'shutdown') {
@@ -535,7 +536,7 @@ async function submitAction() {
           @click="openAction('start', $event.currentTarget)">有卡开机</ElButton>
         <ElButton v-if="cardlessProfiles.length" class="start-action" :disabled="!!operationBlocked"
           @click="openAction('start', $event.currentTarget, true)">无卡开机</ElButton>
-        <span v-else-if="details.support_without_gpu_start && details.charge_type === 'Postpay'" class="muted">无卡档位尚未核实。</span>
+        <span v-else-if="details.support_without_gpu_start === true && details.charge_type === 'Postpay'" class="muted">{{ cardlessUnavailable(details) }}</span>
       </div>
       <InstanceConnections :instance="details" :jupyter="jupyter" :stale="staleSnapshot" @jupyter-change="updateJupyter" />
       <div v-if="['Running', 'Stopped'].includes(details.state)" class="operation-area">
@@ -715,13 +716,14 @@ async function submitAction() {
     <ElForm v-if="action" label-position="top" :disabled="actionPending" class="action-form" @submit.prevent="submitAction">
       <p><strong>{{ details?.name || instanceId }}</strong> <code>{{ instanceId }}</code></p>
       <template v-if="action.boot_mode === 'without_gpu'">
-        <p>以 CPU 和内存规格运行，不分配 GPU。算力与存储仍可能产生费用。</p>
-        <ElFormItem label="无卡档位" required :error="actionFieldError">
-          <ElSelect v-model="action.without_gpu_spec">
+        <p>不开 GPU，只使用 CPU 和内存。算力和存储仍可能收费。</p>
+        <ElFormItem label="无卡开机配置" required :error="actionFieldError">
+          <ElSelect v-model="action.without_gpu_spec" aria-label="无卡开机配置">
             <ElOption v-for="profile in cardlessProfiles" :key="profile.spec" :value="profile.spec"
-              :label="`${profile.spec} · ${profile.cpu} 核 / ${profile.memory_gb} GB${profile.standard_hourly_cny == null ? ' · 待核价' : ` · 官方 ¥${profile.standard_hourly_cny}/时`}`" />
+              :label="cardlessProfileLabel(profile)" />
           </ElSelect>
         </ElFormItem>
+        <p v-if="cardlessStandardPrice != null" class="muted">算力标准价 ¥{{ cardlessStandardPrice }}/小时，不含存储；以实际账单为准。</p>
       </template>
       <p v-if="action.kind === 'stop' && details?.state === 'Running'">关机会中断此实例上的训练。确认后提交关机申请。</p>
       <p v-if="action.kind === 'stop' && unsentScheduledStart">确认后将停止此实例当前尚未提交的预约开机尝试。</p>

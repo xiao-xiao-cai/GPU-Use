@@ -49,16 +49,17 @@ def probe_spec(instance: dict) -> dict | None:
 def stock_status(instance: dict, pools: dict, checks: dict) -> dict | None:
     if instance["state"] != "Stopped":
         return None
-    needed = instance.get("gpu")
-    if type(needed) is not int or needed <= 0:
-        return None
     scope = {field: instance.get(field) for field in ("region", "zone", "gpu_model")}
+    gpu = instance.get("gpu")
+    needed = gpu if type(gpu) is int and gpu > 0 else None
+    if needed is None and not scope["gpu_model"]:
+        return None
     scope["instance_type"] = catalog.instance_type(instance["charge_type"]) if instance.get("charge_type") else None
     pool = watches.pool_status(scope | {"gpu": needed}, pools) if all(scope.values()) else {
         "state": "unknown", "required_cards": needed, "remaining_cards": None, "provider_updated_at": None,
         "pool": None, "available": None,
     }
-    spec = probe_spec(instance)
+    spec = probe_spec(instance) if needed is not None else None
     check = checks.get(key(spec)) if spec else None
     available = bool(check["available"]) if check and check["available"] is not None else None
     return pool | {"available": available, "spec_available": available,

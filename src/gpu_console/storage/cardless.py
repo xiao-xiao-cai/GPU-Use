@@ -1,9 +1,23 @@
-"""Record operator-verified CompShare cardless profiles by availability zone."""
+"""Resolve documented and operator-verified CompShare cardless profiles by zone."""
 
 from decimal import Decimal, InvalidOperation
 from sqlite3 import Connection
 
 from gpu_console.application.task_config import CARDLESS_SPECS, integer, text
+
+
+TIER_PROFILES = {
+    "A": {"spec": "A", "cpu": 2, "memory_gb": 4, "standard_hourly_cny": None},
+    "B": {"spec": "B", "cpu": 8, "memory_gb": 16, "standard_hourly_cny": "0.60"},
+    "C": {"spec": "C", "cpu": 4, "memory_gb": 8, "standard_hourly_cny": "0.30"},
+}
+ZONE_TIERS = {
+    ("cn-wlcb", "cn-wlcb-01"): ("B", "C"),
+    ("cn-sh2", "cn-sh2-02"): ("B", "C"),
+    ("cn-bj2", "cn-bj2-03"): ("A",),
+    ("cn-sh2", "cn-sh2-01"): ("A",),
+    ("cn-sh2", "cn-sh2-03"): ("A",),
+}
 
 
 def initialize(conn: Connection) -> None:
@@ -14,13 +28,22 @@ def initialize(conn: Connection) -> None:
     )""")
 
 
+def _fits_documented_zone(scope: tuple[str, str], spec: str, cpu: int, memory: int) -> bool:
+    tiers = ZONE_TIERS.get(scope)
+    if tiers is None:
+        return True
+    return spec in tiers and (TIER_PROFILES[spec]["cpu"], TIER_PROFILES[spec]["memory_gb"]) == (cpu, memory)
+
+
 def record_profile(conn: Connection, profile: dict) -> None:
     region, zone = (text(profile.get(field), field) for field in ("region", "zone"))
     spec = text(profile.get("spec"), "无卡档位")
     if spec not in CARDLESS_SPECS:
-        raise ValueError("无卡档位须为 A 或 B")
+        raise ValueError("无卡档位无效")
     cpu = integer(profile.get("cpu"), "CPU 核数", 1, 4096)
     memory = integer(profile.get("memory_gb"), "内存 GB", 1, 65536)
+    if not _fits_documented_zone((region, zone), spec, cpu, memory):
+        raise ValueError("无卡配置与该可用区的已知规格不符")
     standard = profile.get("standard_hourly_cny")
     if standard is not None:
         try:
@@ -30,7 +53,7 @@ def record_profile(conn: Connection, profile: dict) -> None:
         if not amount.is_finite() or not 0 <= amount <= 10000:
             raise ValueError("无卡官方小时价无效")
         standard = str(amount)
-    if conn.execute("""SELECT 1 FROM cardless_profiles WHERE region=? AND zone=?
+    if (region, zone) not in ZONE_TIERS and conn.execute("""SELECT 1 FROM cardless_profiles WHERE region=? AND zone=?
                        AND cpu=? AND memory_gb=? AND spec<>?""", (region, zone, cpu, memory, spec)).fetchone():
         raise ValueError("同区无卡档位必须可通过 CPU 和内存区分")
     conn.execute("""INSERT INTO cardless_profiles VALUES (?,?,?,?,?,?) ON CONFLICT(region,zone,spec)
@@ -39,16 +62,23 @@ def record_profile(conn: Connection, profile: dict) -> None:
 
 
 def profiles(conn: Connection) -> dict[tuple[str, str], list[dict]]:
-    result: dict[tuple[str, str], list[dict]] = {}
+    result = {
+        scope: {spec: TIER_PROFILES[spec].copy() for spec in tiers}
+        for scope, tiers in ZONE_TIERS.items()
+    }
     for row in conn.execute("SELECT * FROM cardless_profiles ORDER BY region,zone,spec"):
-        result.setdefault((row["region"], row["zone"]), []).append({
-            key: row[key] for key in ("spec", "cpu", "memory_gb", "standard_hourly_cny")
-        })
-    return result
+        scope, spec = (row["region"], row["zone"]), row["spec"]
+        if not _fits_documented_zone(scope, spec, row["cpu"], row["memory_gb"]):
+            continue
+        options = result.setdefault(scope, {})
+        if spec not in options or row["standard_hourly_cny"] is not None:
+            options[spec] = {key: row[key] for key in ("spec", "cpu", "memory_gb", "standard_hourly_cny")}
+    return {scope: list(options.values()) for scope, options in result.items()}
 
 
 def eligible(instance: dict) -> bool:
-    return instance.get("charge_type") == "Postpay" and instance.get("support_without_gpu_start") is True
+    return (instance.get("charge_type") == "Postpay" and instance.get("support_without_gpu_start") is True
+            and "A800" not in str(instance.get("gpu_model") or "").upper())
 
 
 def options_for(instance: dict, registered: dict[tuple[str, str], list[dict]]) -> list[dict]:
@@ -71,7 +101,7 @@ def require_profile(conn: Connection, instance: dict, spec: str) -> dict:
     options = options_for(instance, profiles(conn))
     profile = next((item for item in options if item["spec"] == spec), None)
     if profile is None:
-        raise ValueError("该可用区的无卡档位未核实，不能开机")
+        raise ValueError("此可用区未开放这项无卡配置")
     return profile
 
 

@@ -1,5 +1,5 @@
 import { computed, onScopeDispose, shallowRef, watch, type Ref } from 'vue'
-import { readSnapshot, type Run, type Snapshot } from './api/client'
+import { readSnapshot, type CardlessProfile, type Instance, type Run, type Snapshot } from './api/client'
 
 const date = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
@@ -70,6 +70,18 @@ export const chargeLabels: Record<string, string> = {
 }
 
 export const storagePriceLabels = { actual: '实例费率', account: '账号报价', standard: '标准价' }
+
+export function cardlessProfileLabel(profile?: CardlessProfile) {
+  return profile ? `${profile.cpu} 核 / ${profile.memory_gb} GB` : '配置待确认'
+}
+
+export function cardlessUnavailable(instance: Instance) {
+  if ((instance.charge_type && instance.charge_type !== 'Postpay') || instance.support_without_gpu_start === false
+    || instance.gpu_model?.toUpperCase().includes('A800')) {
+    return '这台实例不支持无卡开机。'
+  }
+  return '无卡开机暂未开放。'
+}
 
 export function useSnapshot<T>(path: Ref<string | null>, interval = 15_000) {
   const state = shallowRef<Snapshot<T>>({ data: [], success_at: null, error: null })

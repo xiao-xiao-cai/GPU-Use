@@ -1292,8 +1292,8 @@ class CompShare:
         self._instance_action("StartCompShareInstance", instance)
 
     def start_without_gpu(self, instance: dict[str, Any], spec: str) -> None:
-        if spec not in ("A", "B"):
-            raise ValueError("无卡档位须为 A 或 B")
+        if spec not in ("A", "B", "C"):
+            raise ValueError("无卡档位无效")
         data = self._invoke("StartCompShareInstance", _scope(instance) | {
             "UHostId": instance["id"], "WithoutGpuSpec": spec,
         }, write=True)

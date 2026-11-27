@@ -57,7 +57,7 @@ export interface InstanceIPAddress {
 }
 
 export type BootMode = 'with_gpu' | 'without_gpu'
-export type CardlessSpec = 'A' | 'B'
+export type CardlessSpec = 'A' | 'B' | 'C'
 
 export interface CardlessProfile {
   spec: CardlessSpec
@@ -131,7 +131,7 @@ export interface Instance extends Zone {
   stock?: {
     state: 'known' | 'stale' | 'unknown' | 'unsupported'
     pool: 'exclusive' | 'spot' | null
-    required_cards: number
+    required_cards: number | null
     remaining_cards: number | null
     provider_updated_at: number | null
     spec_available: boolean | null

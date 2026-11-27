@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Literal, get_args
 from zoneinfo import ZoneInfo
 
 
@@ -17,8 +17,8 @@ SPEC_FIELDS = ("gpu_model", "gpu", "cpu", "memory_gb", "cpu_platform", "image_id
 SHUTDOWN_LEAD = 3600
 SHUTDOWN_MINIMUM = 300
 BootMode = Literal["with_gpu", "without_gpu"]
-CardlessSpec = Literal["A", "B"]
-CARDLESS_SPECS = ("A", "B")
+CardlessSpec = Literal["A", "B", "C"]
+CARDLESS_SPECS = get_args(CardlessSpec)
 INSTANCE_NAME = re.compile(r"[a-zA-Z0-9_.,: \u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff-]+")
 
 
@@ -135,7 +135,7 @@ def validate_config(kind: str, source: object, *, immediate: bool = False) -> di
             raise ValueError("仅开机操作可配置有效的启动模式")
         if boot_mode == "without_gpu":
             if cardless_spec not in CARDLESS_SPECS:
-                raise ValueError("无卡开机须指定已核实的 A 或 B 档位")
+                raise ValueError("请选择可用的无卡开机配置")
             config.update(boot_mode=boot_mode, without_gpu_spec=cardless_spec)
         elif cardless_spec is not None:
             raise ValueError("只有无卡开机可指定无卡档位")

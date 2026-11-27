@@ -302,8 +302,9 @@ def test_start_distinguishes_capacity_rejection_from_uncertain_submission(code, 
     assert request["Region"] == ZONE["region"] and request["Zone"] == ZONE["zone"]
 
 
-def test_cardless_wire_and_rate_require_explicit_zero_gpu_and_current_boot():
-    live = instance(ChargeType="Postpay", GPU=0, CPU=8, Memory=16384, StartTime=1_800_000_000)
+@pytest.mark.parametrize(("tier", "cpu", "memory_mb"), [("A", 2, 4096), ("B", 8, 16384), ("C", 4, 8192)])
+def test_cardless_wire_and_rate_require_explicit_zero_gpu_and_current_boot(tier, cpu, memory_mb):
+    live = instance(ChargeType="Postpay", GPU=0, CPU=cpu, Memory=memory_mb, StartTime=1_800_000_000)
     wire = Wire({"UHostId": live["UHostId"]},
                 {"TotalCount": 3, "UHostSet": [live, instance(1, ChargeType="Postpay", GPU=None),
                                              instance(2, ChargeType="Postpay", GPU=0, State="Stopped")]},
@@ -311,9 +312,11 @@ def test_cardless_wire_and_rate_require_explicit_zero_gpu_and_current_boot():
                 {"TotalCount": 1, "UHostSet": [live | {"InstancePrice": 5, "StartTime": 1_799_999_990}]},
                 {"TotalCount": 1, "UHostSet": [live | {"InstancePrice": 5, "GPU": 1}]})
     cloud = client(wire)
-    cloud.start_without_gpu({"id": live["UHostId"], "project_id": PROJECT, **ZONE}, "B")
+    scope = {"region": "cn-sh2", "zone": "cn-sh2-01"} if tier == "A" else ZONE
+    cloud.start_without_gpu({"id": live["UHostId"], "project_id": PROJECT, **scope}, tier)
     request, retries = wire.sent[0]
-    assert request["WithoutGpuSpec"] == "B" and retries == 0
+    assert request["WithoutGpuSpec"] == tier and retries == 0
+    assert request["Region"] == scope["region"] and request["Zone"] == scope["zone"]
     rows = cloud.instances(PROJECT)
     assert [row["gpu_mode"] for row in rows] == ["without_gpu", None, None]
     assert cloud.instance_prices(PROJECT, rows[:1])[live["UHostId"]]["instance_price_per_hour"] == 0.45

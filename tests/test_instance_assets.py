@@ -277,17 +277,18 @@ def test_stopped_instance_probes_its_saved_configuration_without_boot_history(co
 
 def test_stopped_instance_probes_last_gpu_configuration_after_cardless_boot_and_restart(console):
     web, db, now = console
-    original = INSTANCE | {"support_without_gpu_start": True, "cpu_platform": "Intel/EmeraldRapids"}
+    original = INSTANCE | {"support_without_gpu_start": True, "cpu_platform": "Intel/EmeraldRapids", "create_time": NOW}
     cardless_run = original | {"state": "Running", "gpu_mode": "without_gpu", "gpu": 0, "cpu": 4,
                               "memory_gb": 8, "cpu_platform": "Amd/Epyc2", "start_time": NOW}
-    stopped = cardless_run | {"state": "Stopped", "gpu_mode": None, "image_id": "image-new"}
+    stopped = cardless_run | {"state": "Stopped", "gpu_mode": None, "image_id": "image-new",
+                              "disks": [original["disks"][0] | {"size_gb": 200}]}
     observed = []
 
     class Cloud:
-        current = original
+        rows = []
 
         def instances(self, project_id):
-            return [self.current.copy()]
+            return [row.copy() for row in self.rows]
 
         def monitor(self, project_id, region, instance_ids):
             return []
@@ -300,32 +301,38 @@ def test_stopped_instance_probes_last_gpu_configuration_after_cardless_boot_and_
             return spec["gpu"] == original["gpu"]
 
     cloud = Cloud()
-    assets = AssetCollector(db, cloud)
 
-    def sync(instance):
+    def sync(*instances):
         now[0] += 1
-        cloud.current = instance
+        cloud.rows = instances
         Collector(db, cloud)._instances(PROJECT, {"retention_days": 30}, 0)
 
     def stock():
         [item] = web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]
         assert (item["gpu"], item["cpu"], item["memory_gb"]) == (0, 4, 8)
+        assert "gpu_boot_spec" not in item
         return item["stock"]
 
     sync(original)
+    sync(original | {"gpu": 2, "memory_gb": None})
     sync(cardless_run)
+    sync()
+    assert web.get("/api/instances", params={"project_id": PROJECT}).json()["data"] == []
+    storage.initialize(db)
     sync(stopped)
     with storage.connect(db) as conn, storage.transaction(conn):
         availability.record_pool(conn, ZONE["region"], now[0], provider_updated_at=now[0],
                                  counts={(ZONE["zone"], original["gpu_model"], "exclusive"): 25})
     assert stock()["spec_available"] is None
     assert stock()["required_cards"] == 1
+    assets = AssetCollector(db, cloud)
     assets.probe_capacity([PROJECT], now[0])
     [spec] = observed
     assert {field: spec[field] for field in ("gpu", "cpu", "memory_gb", "cpu_platform")} == {
         field: original[field] for field in ("gpu", "cpu", "memory_gb", "cpu_platform")
     }
     assert spec["image_id"] == stopped["image_id"]
+    assert spec["disks"] == [{"purpose": "system", "type": "CLOUD_SSD", "size_gb": 200}]
     assert stock()["spec_available"] is True and stock()["uses_saved_spec"] is True
 
     sync(original | NEXT)
@@ -335,6 +342,29 @@ def test_stopped_instance_probes_last_gpu_configuration_after_cardless_boot_and_
     assert stock()["spec_available"] is False
     sync(stopped | {"zone": "other-zone"})
     assert stock()["required_cards"] is None and stock()["uses_saved_spec"] is False
+    sync(stopped | {"create_time": NOW + 1})
+    assert stock()["required_cards"] is None and stock()["uses_saved_spec"] is False
+    with storage.connect(db) as conn:
+        snapshot(conn, "instances", "other", [stopped | {"project_id": "other"}])
+    [other] = web.get("/api/instances", params={"project_id": "other"}).json()["data"]
+    assert other["stock"]["required_cards"] is None and other["stock"]["uses_saved_spec"] is False
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_existing_instance_snapshot_seeds_durable_gpu_boot_spec(console, embedded):
+    web, db, _ = console
+    original = INSTANCE | {"support_without_gpu_start": True, "cpu_platform": "Intel/EmeraldRapids"}
+    stopped = original | {"gpu": 0, "cpu": 4, "memory_gb": 8, "cpu_platform": "Amd/Epyc2"}
+    compute = {field: original[field] for field in ("gpu", "cpu", "memory_gb", "cpu_platform")}
+    legacy = stopped | {"gpu_boot_spec": compute} if embedded else original
+    with storage.connect(db) as conn:
+        conn.execute("DROP TABLE instance_gpu_boot_specs")
+        snapshot(conn, "instances", PROJECT, [legacy])
+    storage.initialize(db)
+    with storage.connect(db) as conn:
+        snapshot(conn, "instances", PROJECT, [stopped])
+    [item] = web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]
+    assert item["stock"]["required_cards"] == original["gpu"] and item["stock"]["uses_saved_spec"] is True
 
 
 @pytest.mark.parametrize("gpu", [0, None])

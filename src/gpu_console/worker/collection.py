@@ -439,8 +439,8 @@ class Collector:
                     row.update(without_gpu_spec=profile.get("spec"),
                                cardless_hourly_cny=account if account is not None else standard,
                                cardless_rate_source="account" if account is not None else "official" if standard is not None else None)
-                instance_assets.remember_gpu_boot_spec(row, previous_row)
                 instance_assets.record_disk_usage(row, previous_row, points_by_id[iid], timestamp)
+            instance_assets.record_gpu_boot_specs(conn, project_id, rows)
             conn.executemany(
                 """INSERT INTO metrics(project_id,instance_id,metric,label,sampled_at,value)
                    VALUES (:project_id,:instance_id,:metric,:label,:sampled_at,:value)

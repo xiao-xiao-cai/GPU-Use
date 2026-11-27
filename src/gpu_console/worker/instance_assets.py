@@ -144,7 +144,8 @@ class AssetCollector:
                 for row in snapshot["data"]:
                     if row.get("state") != "Stopped" or row.get("project_id", project) != project:
                         continue
-                    if spec := assets.probe_spec(assets.gpu_boot_target(row) | {"project_id": project}):
+                    target = assets.gpu_boot_target(conn, row | {"project_id": project})
+                    if spec := assets.probe_spec(target):
                         targets[assets.key(spec)] = spec
         identity = min(targets, key=lambda item: checks.get(item, 0), default=None)
         if identity is None or now - checks.get(identity, 0) < assets.SYNC_SECONDS:

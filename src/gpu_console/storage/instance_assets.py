@@ -8,18 +8,25 @@ from sqlite3 import Connection
 from gpu_console import storage
 from gpu_console.application.idle_notices import SAMPLE_FRESHNESS
 from gpu_console.application import watches
-from gpu_console.storage import catalog
+from gpu_console.storage import catalog, instance_history
 
 SYNC_SECONDS = 300
 PRICE_SECONDS = 86400
 STANDARD_SECONDS = 7 * 86400
 BILLING_UNITS = {"Postpay": "hour", "Dynamic": "hour", "Day": "day", "Month": "month", "Year": "year"}
 GPU_COMPUTE_FIELDS = ("gpu", "cpu", "memory_gb")
-INSTANCE_IDENTITY = ("project_id", "id", "region", "zone", "gpu_model", "create_time")
+INSTANCE_IDENTITY = ("id", "region", "zone", "gpu_model", "create_time")
 
 
 def initialize(conn: Connection) -> None:
     conn.executescript("""
+        CREATE TABLE IF NOT EXISTS instance_gpu_boot_specs (
+            project_id TEXT NOT NULL, instance_id TEXT NOT NULL, region TEXT NOT NULL,
+            zone TEXT NOT NULL, gpu_model TEXT NOT NULL, create_time INTEGER,
+            gpu INTEGER NOT NULL CHECK(gpu>0), cpu INTEGER NOT NULL CHECK(cpu>0),
+            memory_gb INTEGER NOT NULL CHECK(memory_gb>0), cpu_platform TEXT,
+            PRIMARY KEY(project_id,instance_id)
+        );
         CREATE TABLE IF NOT EXISTS instance_capacity_checks (
             scope TEXT PRIMARY KEY, checked_at INTEGER NOT NULL, available INTEGER
         );
@@ -29,6 +36,9 @@ def initialize(conn: Connection) -> None:
             observed_at INTEGER, PRIMARY KEY(scope,source)
         );
     """)
+    with storage.transaction(conn):
+        for row in conn.execute("SELECT scope,data FROM snapshots WHERE kind='instances' AND success_at IS NOT NULL"):
+            record_gpu_boot_specs(conn, row["scope"], json.loads(row["data"]), legacy=True)
 
 
 def key(spec: dict) -> str:
@@ -39,21 +49,45 @@ def _complete_gpu_compute(spec: dict) -> bool:
     return all(type(spec.get(field)) is int and spec[field] > 0 for field in GPU_COMPUTE_FIELDS)
 
 
-def remember_gpu_boot_spec(instance: dict, previous: dict) -> None:
-    if (instance.get("charge_type") != "Postpay" or instance.get("support_without_gpu_start") is False
-            or instance.get("gpu") not in (None, 0)
-            or any(instance.get(field) != previous.get(field) for field in INSTANCE_IDENTITY)):
-        return
-    saved = previous if _complete_gpu_compute(previous) else (previous.get("gpu_boot_spec") or {})
-    if _complete_gpu_compute(saved):
-        instance["gpu_boot_spec"] = {field: saved.get(field) for field in (*GPU_COMPUTE_FIELDS, "cpu_platform")}
+def record_gpu_boot_specs(conn: Connection, project_id: str, rows: list[dict], *, legacy: bool = False) -> None:
+    records = []
+    for instance in rows:
+        identity = tuple(instance.get(field) for field in INSTANCE_IDENTITY)
+        if (instance.get("project_id", project_id) != project_id or not all(identity[:-1])
+                or instance.get("state") in instance_history.TERMINAL):
+            continue
+        spec = instance
+        if legacy and instance.get("gpu") in (None, 0):
+            spec = instance.get("gpu_boot_spec") or {}
+        elif instance.get("gpu_mode") == "without_gpu":
+            continue
+        if _complete_gpu_compute(spec):
+            compute = tuple(spec.get(field) for field in (*GPU_COMPUTE_FIELDS, "cpu_platform"))
+            records.append((project_id, *identity, *compute, legacy))
+
+    conn.executemany("""
+        INSERT INTO instance_gpu_boot_specs (
+            project_id,instance_id,region,zone,gpu_model,create_time,gpu,cpu,memory_gb,cpu_platform
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(project_id,instance_id) DO UPDATE SET
+            region=excluded.region, zone=excluded.zone, gpu_model=excluded.gpu_model, create_time=excluded.create_time,
+            gpu=excluded.gpu, cpu=excluded.cpu, memory_gb=excluded.memory_gb, cpu_platform=excluded.cpu_platform
+        WHERE NOT ? AND (region,zone,gpu_model,create_time,gpu,cpu,memory_gb,cpu_platform) IS NOT
+            (excluded.region,excluded.zone,excluded.gpu_model,excluded.create_time,
+             excluded.gpu,excluded.cpu,excluded.memory_gb,excluded.cpu_platform)
+    """, records)
 
 
-def gpu_boot_target(instance: dict) -> dict:
-    saved = instance.get("gpu_boot_spec") or {}
+def gpu_boot_target(conn: Connection, instance: dict) -> dict:
     if (instance.get("gpu") == 0 and instance.get("charge_type") == "Postpay"
-            and instance.get("support_without_gpu_start") is True and _complete_gpu_compute(saved)):
-        return instance | saved
+            and instance.get("support_without_gpu_start") is True):
+        identity = tuple(instance.get(field) for field in ("project_id", *INSTANCE_IDENTITY))
+        saved = conn.execute("""
+            SELECT gpu,cpu,memory_gb,cpu_platform FROM instance_gpu_boot_specs
+            WHERE project_id=? AND instance_id=? AND region=? AND zone=? AND gpu_model=? AND create_time IS ?
+        """, identity).fetchone()
+        if saved is not None:
+            return instance | dict(saved)
     return instance
 
 
@@ -70,11 +104,11 @@ def probe_spec(instance: dict) -> dict | None:
     return spec
 
 
-def stock_status(instance: dict, pools: dict, checks: dict) -> dict | None:
+def stock_status(conn: Connection, instance: dict, pools: dict, checks: dict) -> dict | None:
     if instance["state"] != "Stopped":
         return None
     scope = {field: instance.get(field) for field in ("region", "zone", "gpu_model")}
-    target = gpu_boot_target(instance)
+    target = gpu_boot_target(conn, instance)
     gpu = target.get("gpu")
     needed = gpu if type(gpu) is int and gpu > 0 else None
     if needed is None and not scope["gpu_model"]:
@@ -96,7 +130,7 @@ def project_stock(conn: Connection, rows: list[dict], now: int) -> dict:
     checks = {row["scope"]: row for row in conn.execute(
         "SELECT * FROM instance_capacity_checks WHERE checked_at>=?", (now - 2 * SYNC_SECONDS,),
     )}
-    return {row["id"]: stock_status(row, pools, checks) for row in rows if row.get("state") == "Stopped"}
+    return {row["id"]: stock_status(conn, row, pools, checks) for row in rows if row.get("state") == "Stopped"}
 
 
 def price_scope(resource: dict) -> dict:

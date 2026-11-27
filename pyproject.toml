@@ -1,6 +1,6 @@
 [project]
 name = "gpu-console"
-version = "0.30.2"
+version = "0.30.3"
 description = "CompShare GPU experiment console"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -1,7 +1,7 @@
 name: gpu-console
 
 x-runtime: &runtime
-  image: ${GPU_IMAGE:-gpu-console:0.30.2}
+  image: ${GPU_IMAGE:-gpu-console:0.30.3}
   restart: on-failure
   read_only: true
   security_opt:

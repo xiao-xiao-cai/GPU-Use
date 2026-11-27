@@ -136,6 +136,7 @@ export interface Instance extends Zone {
     provider_updated_at: number | null
     spec_available: boolean | null
     spec_checked_at: number | null
+    uses_saved_spec?: boolean
   } | null
   active_operation?: { kind: string; state: string; capacity_wait: boolean } | null
 }

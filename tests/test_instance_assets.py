@@ -275,6 +275,68 @@ def test_stopped_instance_probes_its_saved_configuration_without_boot_history(co
     assert item["stock"]["spec_checked_at"] == NOW
 
 
+def test_stopped_instance_probes_last_gpu_configuration_after_cardless_boot_and_restart(console):
+    web, db, now = console
+    original = INSTANCE | {"support_without_gpu_start": True, "cpu_platform": "Intel/EmeraldRapids"}
+    cardless_run = original | {"state": "Running", "gpu_mode": "without_gpu", "gpu": 0, "cpu": 4,
+                              "memory_gb": 8, "cpu_platform": "Amd/Epyc2", "start_time": NOW}
+    stopped = cardless_run | {"state": "Stopped", "gpu_mode": None, "image_id": "image-new"}
+    observed = []
+
+    class Cloud:
+        current = original
+
+        def instances(self, project_id):
+            return [self.current.copy()]
+
+        def monitor(self, project_id, region, instance_ids):
+            return []
+
+        def instance_prices(self, project_id, instances):
+            return {}
+
+        def capacity(self, spec):
+            observed.append(spec)
+            return spec["gpu"] == original["gpu"]
+
+    cloud = Cloud()
+    assets = AssetCollector(db, cloud)
+
+    def sync(instance):
+        now[0] += 1
+        cloud.current = instance
+        Collector(db, cloud)._instances(PROJECT, {"retention_days": 30}, 0)
+
+    def stock():
+        [item] = web.get("/api/instances", params={"project_id": PROJECT}).json()["data"]
+        assert (item["gpu"], item["cpu"], item["memory_gb"]) == (0, 4, 8)
+        return item["stock"]
+
+    sync(original)
+    sync(cardless_run)
+    sync(stopped)
+    with storage.connect(db) as conn, storage.transaction(conn):
+        availability.record_pool(conn, ZONE["region"], now[0], provider_updated_at=now[0],
+                                 counts={(ZONE["zone"], original["gpu_model"], "exclusive"): 25})
+    assert stock()["spec_available"] is None
+    assert stock()["required_cards"] == 1
+    assets.probe_capacity([PROJECT], now[0])
+    [spec] = observed
+    assert {field: spec[field] for field in ("gpu", "cpu", "memory_gb", "cpu_platform")} == {
+        field: original[field] for field in ("gpu", "cpu", "memory_gb", "cpu_platform")
+    }
+    assert spec["image_id"] == stopped["image_id"]
+    assert stock()["spec_available"] is True and stock()["uses_saved_spec"] is True
+
+    sync(original | NEXT)
+    sync(stopped)
+    assert stock()["required_cards"] == 2 and stock()["spec_available"] is None
+    assets.probe_capacity([PROJECT], now[0])
+    assert stock()["spec_available"] is False
+    sync(stopped | {"zone": "other-zone"})
+    assert stock()["required_cards"] is None and stock()["uses_saved_spec"] is False
+
+
 @pytest.mark.parametrize("gpu", [0, None])
 def test_stopped_instance_with_unknown_boot_configuration_still_shows_its_pool(console, gpu):
     web, db, now = console

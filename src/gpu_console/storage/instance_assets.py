@@ -14,6 +14,8 @@ SYNC_SECONDS = 300
 PRICE_SECONDS = 86400
 STANDARD_SECONDS = 7 * 86400
 BILLING_UNITS = {"Postpay": "hour", "Dynamic": "hour", "Day": "day", "Month": "month", "Year": "year"}
+GPU_COMPUTE_FIELDS = ("gpu", "cpu", "memory_gb")
+INSTANCE_IDENTITY = ("project_id", "id", "region", "zone", "gpu_model", "create_time")
 
 
 def initialize(conn: Connection) -> None:
@@ -33,6 +35,28 @@ def key(spec: dict) -> str:
     return sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _complete_gpu_compute(spec: dict) -> bool:
+    return all(type(spec.get(field)) is int and spec[field] > 0 for field in GPU_COMPUTE_FIELDS)
+
+
+def remember_gpu_boot_spec(instance: dict, previous: dict) -> None:
+    if (instance.get("charge_type") != "Postpay" or instance.get("support_without_gpu_start") is False
+            or instance.get("gpu") not in (None, 0)
+            or any(instance.get(field) != previous.get(field) for field in INSTANCE_IDENTITY)):
+        return
+    saved = previous if _complete_gpu_compute(previous) else (previous.get("gpu_boot_spec") or {})
+    if _complete_gpu_compute(saved):
+        instance["gpu_boot_spec"] = {field: saved.get(field) for field in (*GPU_COMPUTE_FIELDS, "cpu_platform")}
+
+
+def gpu_boot_target(instance: dict) -> dict:
+    saved = instance.get("gpu_boot_spec") or {}
+    if (instance.get("gpu") == 0 and instance.get("charge_type") == "Postpay"
+            and instance.get("support_without_gpu_start") is True and _complete_gpu_compute(saved)):
+        return instance | saved
+    return instance
+
+
 def probe_spec(instance: dict) -> dict | None:
     fields = ("project_id", "region", "zone", "gpu_model", "charge_type", "image_id", "gpu", "cpu", "memory_gb")
     spec = {name: instance.get(name) for name in fields}
@@ -50,7 +74,8 @@ def stock_status(instance: dict, pools: dict, checks: dict) -> dict | None:
     if instance["state"] != "Stopped":
         return None
     scope = {field: instance.get(field) for field in ("region", "zone", "gpu_model")}
-    gpu = instance.get("gpu")
+    target = gpu_boot_target(instance)
+    gpu = target.get("gpu")
     needed = gpu if type(gpu) is int and gpu > 0 else None
     if needed is None and not scope["gpu_model"]:
         return None
@@ -59,10 +84,10 @@ def stock_status(instance: dict, pools: dict, checks: dict) -> dict | None:
         "state": "unknown", "required_cards": needed, "remaining_cards": None, "provider_updated_at": None,
         "pool": None, "available": None,
     }
-    spec = probe_spec(instance) if needed is not None else None
+    spec = probe_spec(target) if needed is not None else None
     check = checks.get(key(spec)) if spec else None
     available = bool(check["available"]) if check and check["available"] is not None else None
-    return pool | {"available": available, "spec_available": available,
+    return pool | {"available": available, "spec_available": available, "uses_saved_spec": target is not instance,
                    "spec_checked_at": check["checked_at"] if check else None}
 
 

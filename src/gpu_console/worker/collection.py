@@ -430,6 +430,7 @@ class Collector:
             registered = cardless.profiles(conn)
             for row in rows:
                 iid = row["id"]
+                previous_row = previous_by_id.get(iid, {})
                 if row.get("gpu_mode") == "without_gpu":
                     profile = cardless.match_profile(row, cardless.options_for(row, registered)) or {}
                     account = (dashboard_cost._platform_rate(row.get("instance_price_per_hour"))
@@ -438,7 +439,8 @@ class Collector:
                     row.update(without_gpu_spec=profile.get("spec"),
                                cardless_hourly_cny=account if account is not None else standard,
                                cardless_rate_source="account" if account is not None else "official" if standard is not None else None)
-                instance_assets.record_disk_usage(row, previous_by_id.get(iid, {}), points_by_id[iid], timestamp)
+                instance_assets.remember_gpu_boot_spec(row, previous_row)
+                instance_assets.record_disk_usage(row, previous_row, points_by_id[iid], timestamp)
             conn.executemany(
                 """INSERT INTO metrics(project_id,instance_id,metric,label,sampled_at,value)
                    VALUES (:project_id,:instance_id,:metric,:label,:sampled_at,:value)

@@ -97,6 +97,7 @@ function stockStatus(instance: Instance): StatusBadge | undefined {
   if (instance.state !== 'Stopped' || instance.active_operation || !stock) return
   const pool = stock.pool === 'spot' ? '抢占池' : stock.pool === 'exclusive' ? '普通池' : '资源池'
   const title = pool + '更新时间 ' + timeLabel(stock.provider_updated_at)
+    + (stock.uses_saved_spec ? ' · 按上次有卡规格检查' : '')
     + (stock.spec_checked_at ? ' · 开机检查时间 ' + timeLabel(stock.spec_checked_at) : '')
   if (staleSnapshot.value || stock.state === 'stale') return { label: '库存待更新', type: 'info', title }
   if (stock.state === 'unsupported') return { label: '暂无此类库存', type: 'info', title }
@@ -107,6 +108,9 @@ function stockStatus(instance: Instance): StatusBadge | undefined {
     return { label: prefix + '暂不能有卡开机', type: 'warning', title }
   }
   if (stock.spec_available === true) return { label: prefix + '可有卡开机', type: 'success', title }
+  if (prefix && stock.required_cards === null && instance.gpu === 0) {
+    return { label: prefix + '原有卡规格未读到', type: 'info', title }
+  }
   return { label: prefix ? prefix + '有卡开机待确认' : '库存待更新', type: 'info', title }
 }
 
